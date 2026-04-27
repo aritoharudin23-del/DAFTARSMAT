@@ -1,0 +1,577 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot, query, doc, updateDoc } from 'firebase/firestore';
+import { User, Activity, MapPin, CheckCircle2, History, Info, Stethoscope, CalendarCheck, Clock, Search, Dumbbell, ShieldCheck, HeartPulse, Send, MessageSquare, FileSearch, XCircle, CheckCircle } from 'lucide-react';
+
+// --- Konfigurasi Firebase ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'sport-therapy-clinic-001';
+
+// --- Konfigurasi WhatsApp Admin ---
+const ADMIN_PHONE = "6283128717248"; 
+
+// Logo URL from Uploaded File
+const LOGO_URL = "https://files.oaiusercontent.com/file-ba3b76ca-b320-4fde-a2b1-ced16833311d?se=2024-10-24T09%3A22%3A58Z&sp=r&sv=2024-08-04&sr=b&rscc=max-age%3D604800%2C%20immutable%2C%20private&rscd=attachment%3B%20filename%3D20250714_094537.jpg&sig=vN2E%2BH/Uv7C3E%2BSJvR3bH9l5k6nK0vO6H2N1f9k8q4A%3D";
+
+const App = () => {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [registrations, setRegistrations] = useState([]);
+  const [userRegistrations, setUserRegistrations] = useState([]);
+  const [activeTab, setActiveTab] = useState('register'); 
+  const [submitStatus, setSubmitStatus] = useState({ type: '', message: '', lastDoc: null });
+  const [schedulingId, setSchedulingId] = useState(null); 
+  
+  const [scheduleDetails, setScheduleDetails] = useState({
+    tanggal: '',
+    jam: '',
+    lokasi: 'Lab Gymnasium Universitas Mandiri Subang' 
+  });
+
+  const [formData, setFormData] = useState({
+    nama: '',
+    usia: '',
+    beratBadan: '',
+    alamat: '',
+    profesi: 'atlet',
+    pilihanTerapi: 'Sport Massage', 
+    jenisCedera: 'ANKLE/ENGKEL',
+    sisiTubuh: 'kanan',
+    durasiCedera: '',
+    penyebabCedera: '',
+    keteranganScan: '',
+    status: 'pending',
+    nomorWa: ''
+  });
+
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth Error:", error);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (currUser) => {
+      setUser(currUser);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const q = collection(db, 'artifacts', appId, 'public', 'data', 'registrations');
+    const unsubscribe = onSnapshot(q, 
+      (snapshot) => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const sortedData = data.sort((a, b) => b.createdAt - a.createdAt);
+        setRegistrations(sortedData);
+        const mine = sortedData.filter(reg => reg.userId === user.uid);
+        setUserRegistrations(mine);
+      },
+      (error) => console.error("Firestore Error:", error)
+    );
+    return () => unsubscribe();
+  }, [user]);
+
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
+  };
+
+  const sendInitialToWhatsApp = (data) => {
+    const scanInfo = data.keteranganScan ? `%0A*Hasil Medis:* ${data.keteranganScan}` : "";
+    const message = `*PENDAFTARAN MCO SMAT*%0A` +
+      `--------------------------------%0A` +
+      `*Nama:* ${data.nama}%0A` +
+      `*Usia:* ${data.usia} thn%0A` +
+      `*Terapi:* ${data.pilihanTerapi}%0A` +
+      `*Cedera:* ${data.jenisCedera} (${data.sisiTubuh})%0A` +
+      `*Kronologi:* ${data.penyebabCedera}${scanInfo}%0A` +
+      `--------------------------------%0A` +
+      `_Mohon segera dijadwalkan._`;
+    
+    window.open(`https://wa.me/${ADMIN_PHONE}?text=${message}`, '_blank');
+  };
+
+  const sendScheduleToUser = (reg) => {
+    const cleanNumber = reg.nomorWa?.replace(/\D/g, '');
+    if (!cleanNumber) return;
+
+    const message = `*KONFIRMASI JADWAL MCO SMAT*%0A` +
+      `Halo *${reg.nama}*, pendaftaran Anda telah disetujui.%0A%0A` +
+      `*Detail Jadwal:*%0A` +
+      `📅 Tanggal: ${reg.jadwalTerapi}%0A` +
+      `⏰ Jam: ${reg.jamTerapi}%0A` +
+      `📍 Lokasi: ${reg.lokasiTerapi}%0A%0A` +
+      `_Silakan konfirmasi kehadiran Anda melalui aplikasi. Terima kasih._`;
+    
+    window.open(`https://wa.me/${cleanNumber}?text=${message}`, '_blank');
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!user) return;
+
+    setLoading(true);
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'registrations'), {
+        ...formData,
+        userId: user.uid,
+        createdAt: Date.now(),
+        status: 'pending'
+      });
+      
+      const currentSubmission = { ...formData };
+      setSubmitStatus({ 
+        type: 'success', 
+        message: 'Data tersimpan! Silakan klik tombol di bawah untuk kirim detail ke WhatsApp Admin.',
+        lastDoc: currentSubmission
+      });
+      
+      setFormData({
+        nama: '', usia: '', beratBadan: '', alamat: '', profesi: 'atlet',
+        pilihanTerapi: 'Sport Massage', jenisCedera: 'ANKLE/ENGKEL', sisiTubuh: 'kanan',
+        durasiCedera: '', penyebabCedera: '', keteranganScan: '', status: 'pending', nomorWa: ''
+      });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (error) {
+      setSubmitStatus({ type: 'error', message: 'Gagal mengirim pendaftaran.', lastDoc: null });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const confirmScheduling = async () => {
+    if (!user || !schedulingId) return;
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'registrations', schedulingId);
+      await updateDoc(docRef, { 
+        status: 'scheduled',
+        jadwalTerapi: scheduleDetails.tanggal,
+        jamTerapi: scheduleDetails.jam,
+        lokasiTerapi: scheduleDetails.lokasi
+      });
+      setSchedulingId(null);
+      setScheduleDetails({ tanggal: '', jam: '', lokasi: 'Lab Gymnasium Universitas Mandiri Subang' });
+    } catch (error) {
+      console.error("Update Error:", error);
+    }
+  };
+
+  const updatePatientStatus = async (regId, newStatus) => {
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'registrations', regId);
+      await updateDoc(docRef, { status: newStatus });
+    } catch (error) {
+      console.error("Status Update Error:", error);
+    }
+  };
+
+  const cancelStatus = async (regId) => {
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'registrations', regId);
+      await updateDoc(docRef, { 
+        status: 'pending',
+        jadwalTerapi: null,
+        jamTerapi: null,
+        lokasiTerapi: null
+      });
+    } catch (error) {
+      console.error("Cancel Error:", error);
+    }
+  };
+
+  const injuryList = [
+    "ANKLE/ENGKEL", "LUTUT", "PINGGUL", "HAMSTRING", "PINGGANG", 
+    "BAHU", "SIKU", "PERGELANGAN TANGAN", "JARI TANGAN", 
+    "HNP", "PIRIFORMIS SYNDROME", "LAINNYA"
+  ];
+
+  return (
+    <div className="min-h-screen bg-[#F8FAFC] pb-12 font-sans text-slate-700">
+      {/* Navbar yang Diperbarui untuk Logo yang Lebih Jelas */}
+      <nav className="bg-white sticky top-0 z-40 border-b border-slate-100 shadow-sm">
+        <div className="max-w-6xl mx-auto px-6 h-24 flex items-center justify-between">
+          <div className="flex items-center gap-5">
+            <div className="relative group flex items-center justify-center">
+              {/* Outer Glow Effect */}
+              <div className="absolute -inset-2 bg-emerald-400/20 rounded-full blur-xl group-hover:bg-emerald-400/30 transition duration-500"></div>
+              
+              <img 
+                src={LOGO_URL} 
+                alt="Logo MCO SMAT" 
+                className="relative w-16 h-16 object-contain rounded-full shadow-md bg-white p-0.5 border-2 border-slate-50"
+                onError={(e) => { e.target.src = 'https://via.placeholder.com/100?text=SMAT'; }}
+              />
+            </div>
+            
+            <div className="flex flex-col">
+              <h1 className="font-black text-2xl tracking-tighter text-slate-900 leading-none">
+                MCO <span className="text-emerald-500">SMAT</span>
+              </h1>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="w-4 h-[2px] bg-emerald-500 rounded-full"></span>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.25em]">Injury Recovery</p>
+              </div>
+            </div>
+          </div>
+          
+          <div className="bg-slate-50 p-1.5 rounded-2xl flex gap-1 border border-slate-100">
+            <button 
+              onClick={() => setActiveTab('register')} 
+              className={`px-6 py-2.5 text-[10px] font-black tracking-widest rounded-xl transition-all uppercase ${activeTab === 'register' ? 'bg-white text-emerald-600 shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
+            >
+              PASIEN
+            </button>
+            <button 
+              onClick={() => setActiveTab('admin')} 
+              className={`px-6 py-2.5 text-[10px] font-black tracking-widest rounded-xl transition-all uppercase ${activeTab === 'admin' ? 'bg-white text-emerald-600 shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
+            >
+              ADMIN
+            </button>
+          </div>
+        </div>
+      </nav>
+
+      <main className="max-w-6xl mx-auto px-6 py-10">
+        {activeTab === 'register' ? (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
+            <div className="lg:col-span-8 space-y-8">
+              <header className="space-y-2">
+                <h2 className="text-4xl font-black text-slate-800 tracking-tight">Konsultasi & Terapi</h2>
+                <p className="text-slate-500 font-medium italic text-lg">Penanganan profesional untuk pemulihan optimal di MCO SMAT.</p>
+              </header>
+
+              {submitStatus.message && (
+                <div className={`p-6 rounded-[2.5rem] space-y-4 animate-in slide-in-from-top-4 duration-500 ${submitStatus.type === 'success' ? 'bg-emerald-50 border border-emerald-100 text-emerald-700' : 'bg-rose-50 border border-rose-100 text-rose-700'}`}>
+                  <div className="flex items-center gap-4">
+                    {submitStatus.type === 'success' ? <ShieldCheck className="w-8 h-8 text-emerald-500" /> : <Info className="w-8 h-8 text-rose-500" />}
+                    <p className="text-sm font-bold">{submitStatus.message}</p>
+                  </div>
+                  {submitStatus.type === 'success' && submitStatus.lastDoc && (
+                    <button 
+                      onClick={() => sendInitialToWhatsApp(submitStatus.lastDoc)}
+                      className="w-full flex items-center justify-center gap-3 bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl shadow-emerald-200 transition-all active:scale-[0.98]"
+                    >
+                      <Send className="w-4 h-4" /> Kirim Detail ke WhatsApp Admin
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <form onSubmit={handleSubmit} className="bg-white rounded-[2.5rem] shadow-[0_20px_50px_rgba(0,0,0,0.04)] border border-slate-100 overflow-hidden">
+                <div className="p-10 space-y-12">
+                  {/* Data Diri */}
+                  <section className="space-y-8">
+                    <div className="flex items-center gap-3">
+                      <div className="w-2 h-8 bg-emerald-500 rounded-full"></div>
+                      <h3 className="text-sm font-black uppercase tracking-[0.2em] text-slate-800">Identitas Pasien</h3>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                      <div className="space-y-2">
+                        <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Nama Lengkap</label>
+                        <input required name="nama" value={formData.nama} onChange={handleInputChange} className="w-full px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-emerald-100 focus:bg-white focus:ring-0 outline-none transition-all placeholder:text-slate-300 font-bold" placeholder="Masukkan nama Anda" />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">WhatsApp Aktif</label>
+                        <input required name="nomorWa" value={formData.nomorWa} onChange={handleInputChange} className="w-full px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-emerald-100 focus:bg-white focus:ring-0 outline-none transition-all placeholder:text-slate-300 font-bold" placeholder="Contoh: 081234..." />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Pekerjaan / Profesi</label>
+                        <select name="profesi" value={formData.profesi} onChange={handleInputChange} className="w-full px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-emerald-100 outline-none font-bold text-slate-700">
+                          <option value="atlet">Atlet Profesional</option>
+                          <option value="olahragawan">Olahragawan (Hobi)</option>
+                          <option value="non atlet">Umum / Non-Atlet</option>
+                        </select>
+                      </div>
+                      <div className="grid grid-cols-2 gap-6">
+                        <div className="space-y-2">
+                          <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Usia</label>
+                          <input required name="usia" value={formData.usia} onChange={handleInputChange} type="number" className="w-full px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-emerald-100 outline-none font-bold" />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Berat (Kg)</label>
+                          <input required name="beratBadan" value={formData.beratBadan} onChange={handleInputChange} type="number" className="w-full px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-emerald-100 outline-none font-bold" />
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+
+                  {/* Terapi */}
+                  <section className="space-y-8">
+                    <div className="flex items-center gap-3">
+                      <div className="w-2 h-8 bg-sky-500 rounded-full"></div>
+                      <h3 className="text-sm font-black uppercase tracking-[0.2em] text-slate-800">Layanan Pemulihan</h3>
+                    </div>
+                    <div className="grid grid-cols-1 gap-4">
+                      {[
+                        { id: 'Sport Massage', label: 'Sport Massage', desc: 'Optimal untuk relaksasi & recovery otot paska aktivitas.', icon: <Activity className="w-6 h-6" /> },
+                        { id: 'Masase Cedera Olahraga', label: 'Penanganan Cedera', desc: 'Fokus pada rehabilitasi ligament, tendon, dan trauma otot.', icon: <Stethoscope className="w-6 h-6" /> },
+                        { id: 'Terapi latihan/Exercise', label: 'Terapi Latihan', desc: 'Penguatan fungsional untuk kembali ke performa puncak.', icon: <Dumbbell className="w-6 h-6" /> }
+                      ].map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => setFormData(p => ({ ...p, pilihanTerapi: item.id }))}
+                          className={`group flex items-center gap-6 p-6 rounded-[2rem] border-2 text-left transition-all duration-300 ${formData.pilihanTerapi === item.id ? 'bg-sky-50 border-sky-500 shadow-md translate-x-2' : 'bg-white border-slate-50 hover:border-slate-100 hover:bg-slate-50/50'}`}
+                        >
+                          <div className={`p-4 rounded-2xl transition-all ${formData.pilihanTerapi === item.id ? 'bg-sky-500 text-white' : 'bg-slate-100 text-slate-400 group-hover:bg-slate-200'}`}>
+                            {item.icon}
+                          </div>
+                          <div className="flex-1">
+                            <p className={`text-lg font-black tracking-tight ${formData.pilihanTerapi === item.id ? 'text-sky-900' : 'text-slate-700'}`}>{item.label}</p>
+                            <p className="text-xs text-slate-400 font-bold leading-relaxed">{item.desc}</p>
+                          </div>
+                          {formData.pilihanTerapi === item.id && <div className="w-3 h-3 rounded-full bg-sky-500 animate-pulse"></div>}
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+
+                  {/* Keluhan */}
+                  <section className="space-y-8">
+                    <div className="flex items-center gap-3">
+                      <div className="w-2 h-8 bg-rose-500 rounded-full"></div>
+                      <h3 className="text-sm font-black uppercase tracking-[0.2em] text-slate-800">Detail Keluhan</h3>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                      <div className="space-y-2">
+                        <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Lokasi Cedera</label>
+                        <select name="jenisCedera" value={formData.jenisCedera} onChange={handleInputChange} className="w-full px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-emerald-100 outline-none font-bold">
+                          {injuryList.map(injury => (
+                            <option key={injury} value={injury}>{injury}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Sisi Tubuh</label>
+                        <div className="flex bg-slate-100 p-1.5 rounded-2xl">
+                          {['kanan', 'kiri'].map(s => (
+                            <button key={s} type="button" onClick={() => setFormData(p => ({...p, sisiTubuh: s}))} className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${formData.sisiTubuh === s ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
+                              {s}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="md:col-span-2 space-y-2">
+                        <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Kronologi Kejadian</label>
+                        <textarea required name="penyebabCedera" value={formData.penyebabCedera} onChange={handleInputChange} className="w-full px-6 py-5 rounded-3xl bg-slate-50 border-2 border-transparent focus:border-emerald-100 focus:bg-white outline-none font-bold text-sm min-h-[140px]" placeholder="Jelaskan kronologi cedera secara detail..."></textarea>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+                
+                <div className="p-10 bg-slate-50/50 border-t border-slate-100 flex items-center justify-end">
+                  <button disabled={loading} type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-[0.2em] py-5 px-16 rounded-2xl shadow-2xl shadow-emerald-600/30 active:scale-[0.98] transition-all disabled:opacity-50">
+                    {loading ? 'MEMPROSES...' : 'KIRIM PENDAFTARAN'}
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            <div className="lg:col-span-4 space-y-8">
+              <div className="flex items-center gap-3 ml-2">
+                <History className="w-6 h-6 text-emerald-500" />
+                <h3 className="text-sm font-black uppercase tracking-widest text-slate-900">Riwayat Sesi</h3>
+              </div>
+              
+              <div className="space-y-6">
+                {userRegistrations.length === 0 ? (
+                  <div className="p-16 text-center bg-white border-2 border-dashed border-slate-100 rounded-[3rem] space-y-4">
+                    <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto border border-slate-100 shadow-inner">
+                      <Clock className="w-7 h-7 text-slate-300" />
+                    </div>
+                    <p className="text-[10px] font-black text-slate-300 uppercase tracking-[0.3em]">Belum Ada Data</p>
+                  </div>
+                ) : (
+                  userRegistrations.map((reg) => (
+                    <div key={reg.id} className={`group bg-white border-2 rounded-[2.5rem] transition-all duration-500 hover:-translate-y-1 ${reg.status === 'scheduled' || reg.status === 'confirmed' ? 'border-emerald-500 shadow-xl shadow-emerald-500/5' : reg.status === 'reschedule' ? 'border-rose-200' : 'border-slate-100 shadow-sm'}`}>
+                      <div className="p-7 space-y-5">
+                        <div className="flex justify-between items-start">
+                          <h4 className="text-xs font-black text-slate-900 uppercase italic tracking-tight">{reg.pilihanTerapi}</h4>
+                          <span className={`text-[9px] font-black px-3 py-1.5 rounded-full uppercase tracking-widest shadow-sm ${reg.status === 'confirmed' ? 'bg-emerald-600 text-white' : reg.status === 'scheduled' ? 'bg-emerald-50 text-emerald-600' : reg.status === 'reschedule' ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>
+                            {reg.status}
+                          </span>
+                        </div>
+                        
+                        {(reg.status === 'scheduled' || reg.status === 'confirmed' || reg.status === 'reschedule') ? (
+                          <div className={`space-y-4 p-5 rounded-2xl border ${reg.status === 'confirmed' ? 'bg-emerald-50/50 border-emerald-100' : 'bg-slate-50/50 border-slate-100'}`}>
+                            <div className="flex items-center gap-3 text-slate-800">
+                              <CalendarCheck className="w-5 h-5 text-emerald-500" />
+                              <p className="text-xs font-black tracking-tight">{reg.jadwalTerapi} • {reg.jamTerapi}</p>
+                            </div>
+                            <div className="flex items-center gap-3 text-slate-600 border-t border-slate-100/50 pt-3">
+                              <MapPin className="w-5 h-5 text-emerald-500 shrink-0" />
+                              <p className="text-[10px] font-bold leading-relaxed italic">{reg.lokasiTerapi}</p>
+                            </div>
+
+                            {reg.status === 'scheduled' && (
+                              <div className="grid grid-cols-2 gap-3 mt-4 pt-4 border-t border-emerald-100">
+                                <button onClick={() => updatePatientStatus(reg.id, 'confirmed')} className="bg-emerald-600 text-white text-[10px] font-black uppercase tracking-widest py-3 rounded-xl shadow-lg hover:bg-emerald-700 transition-all">Terima</button>
+                                <button onClick={() => updatePatientStatus(reg.id, 'reschedule')} className="bg-white border-2 border-rose-100 text-rose-500 text-[10px] font-black uppercase tracking-widest py-3 rounded-xl hover:bg-rose-50 transition-all">Ubah</button>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100 flex items-start gap-3 italic">
+                            <Clock className="w-5 h-5 text-slate-300 shrink-0" />
+                            <p className="text-[11px] font-bold text-slate-400 leading-relaxed tracking-tight">Mohon tunggu, tim medis MCO SMAT sedang meninjau keluhan Anda.</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-10 animate-in fade-in duration-700">
+            {/* View Admin */}
+            <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-8 bg-white p-10 rounded-[3rem] shadow-xl shadow-slate-200/50 border border-slate-100">
+              <div className="space-y-2">
+                <div className="flex items-center gap-3">
+                  <div className="w-2 h-6 bg-emerald-500 rounded-full"></div>
+                  <h2 className="text-3xl font-black text-slate-900 tracking-tight italic">Dashboard Klinik</h2>
+                </div>
+                <p className="text-slate-400 text-xs font-black uppercase tracking-[0.4em] ml-5">Manajemen Antrean & Jadwal</p>
+              </div>
+              <div className="bg-emerald-600 px-10 py-5 rounded-3xl text-center shadow-2xl shadow-emerald-600/20">
+                <p className="text-[10px] font-black text-emerald-200 uppercase tracking-widest mb-1">Total Pasien</p>
+                <p className="text-4xl font-black text-white leading-none">{registrations.length}</p>
+              </div>
+            </header>
+
+            {schedulingId && (
+              <div className="bg-slate-900 p-10 rounded-[3rem] text-white shadow-2xl animate-in slide-in-from-bottom-8 duration-500 relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/10 blur-[100px] rounded-full"></div>
+                <div className="relative z-10">
+                  <h3 className="text-xl font-black uppercase tracking-widest mb-8 flex items-center gap-3">
+                    <CalendarCheck className="w-6 h-6 text-emerald-400" /> Atur Sesi Terapi
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-10">
+                    <div className="space-y-3">
+                      <label className="text-[11px] font-black uppercase opacity-40 tracking-widest ml-1">Pilih Hari</label>
+                      <input type="date" className="w-full p-5 rounded-2xl bg-white/5 text-white font-bold border-2 border-white/5 focus:border-emerald-500 focus:bg-white/10 outline-none transition-all" value={scheduleDetails.tanggal} onChange={(e) => setScheduleDetails({...scheduleDetails, tanggal: e.target.value})} />
+                    </div>
+                    <div className="space-y-3">
+                      <label className="text-[11px] font-black uppercase opacity-40 tracking-widest ml-1">Pilih Jam</label>
+                      <input type="time" className="w-full p-5 rounded-2xl bg-white/5 text-white font-bold border-2 border-white/5 focus:border-emerald-500 focus:bg-white/10 outline-none transition-all" value={scheduleDetails.jam} onChange={(e) => setScheduleDetails({...scheduleDetails, jam: e.target.value})} />
+                    </div>
+                    <div className="space-y-3">
+                      <label className="text-[11px] font-black uppercase opacity-40 tracking-widest ml-1">Lokasi Sesi</label>
+                      <select className="w-full p-5 rounded-2xl bg-white/5 text-white font-bold border-2 border-white/5 focus:border-emerald-500 focus:bg-white/10 outline-none transition-all" value={scheduleDetails.lokasi} onChange={(e) => setScheduleDetails({...scheduleDetails, lokasi: e.target.value})}>
+                        <option className="bg-slate-900" value="Lab Gymnasium Universitas Mandiri Subang">Lab Gymnasium Universitas Mandiri Subang</option>
+                        <option className="bg-slate-900" value="Klinik SMAT Curugagung Sagalaherang">Klinik SMAT Curugagung Sagalaherang</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="flex gap-4 justify-end">
+                    <button onClick={() => setSchedulingId(null)} className="px-10 py-4 text-xs font-black uppercase tracking-widest opacity-40 hover:opacity-100 transition-all">Batal</button>
+                    <button onClick={confirmScheduling} className="bg-emerald-500 hover:bg-emerald-400 text-slate-900 px-14 py-4 rounded-2xl text-xs font-black uppercase tracking-widest shadow-2xl transition-all active:scale-95">Simpan Jadwal</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 gap-8">
+              {registrations.map((reg) => (
+                <div key={reg.id} className={`group bg-white p-10 rounded-[3rem] border-2 transition-all duration-300 ${reg.status === 'confirmed' ? 'border-emerald-500 bg-emerald-50/20' : reg.status === 'reschedule' ? 'border-rose-300' : 'border-slate-50 hover:shadow-2xl'}`}>
+                  <div className="flex flex-col lg:flex-row justify-between gap-10">
+                    <div className="flex-1 space-y-8">
+                      <div className="flex items-center flex-wrap gap-4">
+                        <h4 className="font-black text-slate-900 text-2xl tracking-tighter uppercase italic">{reg.nama}</h4>
+                        <div className="flex gap-3">
+                           <span className="text-[10px] font-black px-4 py-1.5 bg-slate-100 text-slate-500 rounded-full uppercase tracking-widest">{reg.profesi}</span>
+                           {reg.status === 'confirmed' && <span className="text-[10px] font-black px-4 py-1.5 bg-emerald-600 text-white rounded-full uppercase tracking-widest flex items-center gap-2 animate-pulse"><CheckCircle className="w-3.5 h-3.5"/> Confirmed</span>}
+                           {reg.status === 'reschedule' && <span className="text-[10px] font-black px-4 py-1.5 bg-rose-600 text-white rounded-full uppercase tracking-widest flex items-center gap-2"><XCircle className="w-3.5 h-3.5"/> Reschedule</span>}
+                        </div>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-8 bg-slate-50/50 p-6 rounded-3xl border border-slate-100">
+                        <div className="space-y-1">
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Status Cedera</p>
+                          <p className="text-xs font-black text-rose-600 uppercase tracking-tight">{reg.jenisCedera} ({reg.sisiTubuh})</p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Program Sesi</p>
+                          <p className="text-xs font-black text-sky-600 uppercase italic tracking-tight">{reg.pilihanTerapi}</p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">WhatsApp</p>
+                          <p className="text-xs font-black text-slate-700">{reg.nomorWa || '-'}</p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Tgl Daftar</p>
+                          <p className="text-xs font-black text-slate-700">{new Date(reg.createdAt).toLocaleDateString('id-ID')}</p>
+                        </div>
+                      </div>
+
+                      {reg.jadwalTerapi && (
+                        <div className={`p-5 rounded-2xl border-2 flex flex-wrap gap-8 items-center ${reg.status === 'confirmed' ? 'bg-white border-emerald-200' : 'bg-white border-slate-100'}`}>
+                           <div className="flex items-center gap-3 text-slate-800 font-black text-xs uppercase tracking-widest">
+                              <CalendarCheck className="w-5 h-5 text-emerald-500" /> {reg.jadwalTerapi} • {reg.jamTerapi}
+                           </div>
+                           <div className="flex items-center gap-3 text-slate-500 font-bold text-[10px] uppercase tracking-widest">
+                              <MapPin className="w-5 h-5 text-emerald-500" /> {reg.lokasiTerapi}
+                           </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col items-stretch lg:items-end gap-4 lg:w-64 shrink-0">
+                      {reg.status === 'pending' || reg.status === 'reschedule' ? (
+                        <>
+                          <button onClick={() => setSchedulingId(reg.id)} className="bg-slate-900 hover:bg-black text-white text-[11px] font-black uppercase tracking-widest py-5 rounded-2xl shadow-xl transition-all hover:scale-[1.02]">
+                            {reg.status === 'reschedule' ? 'Re-Scheduling' : 'Tentukan Jadwal'}
+                          </button>
+                          <button onClick={() => sendInitialToWhatsApp(reg)} className="flex items-center justify-center gap-3 border-2 border-slate-100 text-slate-600 text-[11px] font-black uppercase tracking-widest py-4 rounded-2xl hover:bg-slate-50 transition-all">
+                            <MessageSquare className="w-4 h-4" /> Chat Pasien
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button 
+                            onClick={() => sendScheduleToUser(reg)} 
+                            className="w-full flex items-center justify-center gap-3 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-black uppercase tracking-widest py-5 rounded-2xl shadow-2xl shadow-emerald-600/20 transition-all hover:scale-[1.02]"
+                          >
+                            <Send className="w-4 h-4" /> Kirim Jadwal
+                          </button>
+                          <button onClick={() => cancelStatus(reg.id)} className="text-rose-400 text-[10px] font-black uppercase tracking-widest hover:text-rose-600 transition-all text-center py-2 italic opacity-60 hover:opacity-100">Hapus Status</button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </main>
+
+      <footer className="max-w-6xl mx-auto px-6 py-20 border-t border-slate-100 mt-20 text-center">
+        <div className="flex flex-col items-center gap-8">
+           <img src={LOGO_URL} className="w-14 h-14 grayscale opacity-20 hover:grayscale-0 hover:opacity-100 transition-all duration-700 cursor-pointer" alt="Footer Logo" />
+           <div className="space-y-2">
+             <p className="text-[10px] font-black text-slate-300 uppercase tracking-[0.5em]">MCO SMAT • INJURY RECOVERY CENTER</p>
+             <p className="text-[9px] font-bold text-slate-200 uppercase tracking-widest italic">Professional Recovery and Performance Enhancement</p>
+           </div>
+        </div>
+      </footer>
+    </div>
+  );
+};
+
+export default App;
